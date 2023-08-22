@@ -14,24 +14,19 @@ import io.pravega.client.stream.StreamCut;
 import io.pravega.connectors.flink.FlinkPravegaReader;
 import io.pravega.flinktools.util.ByteArrayDeserializationFormat;
 
-import org.apache.flink.api.common.serialization.SimpleStringEncoder;
-import org.apache.flink.core.fs.Path;
+import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSink;
-import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.OnCheckpointRollingPolicy;
 import org.apache.flink.util.Collector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Copy a Pravega stream to a set of files on any Flink file system, including S3.
- * This uses Flink to provide exactly-once, recovery from failures, and parallelism.
- * The stream is assumed to contain UTF-8 strings.
- * When written to files, each event will be followed by a new line.
+ * Read a Pravega stream with a binary files and display their sizes in the Task Manager stderr.
+ * Each file is one event.
  */
-public class StreamToBinaryFileJob extends AbstractJob {
-    final private static Logger log = LoggerFactory.getLogger(StreamToBinaryFileJob.class);
+public class StreamToBinarySizeJob extends AbstractJob {
+    final private static Logger log = LoggerFactory.getLogger(StreamToBinarySizeJob.class);
 
     /**
      * The entry point for Flink applications.
@@ -41,21 +36,19 @@ public class StreamToBinaryFileJob extends AbstractJob {
     public static void main(String... args) throws Exception {
         AppConfiguration config = new AppConfiguration(args);
         log.info("config: {}", config);
-        StreamToBinaryFileJob job = new StreamToBinaryFileJob(config);
+        StreamToBinarySizeJob job = new StreamToBinarySizeJob(config);
         job.run();
     }
 
-    public StreamToBinaryFileJob(AppConfiguration appConfiguration) {
+    public StreamToBinarySizeJob(AppConfiguration appConfiguration) {
         super(appConfiguration);
     }
 
     public void run() {
         try {
-            final String jobName = getConfig().getJobName(StreamToBinaryFileJob.class.getName());
+            final String jobName = getConfig().getJobName(StreamToBinarySizeJob.class.getName());
             final AppConfiguration.StreamConfig inputStreamConfig = getConfig().getStreamConfig("input");
             log.info("input stream: {}", inputStreamConfig);
-            final String outputFilePath = getConfig().getParams().getRequired("output");
-            log.info("output file: {}", outputFilePath);
             createStream(inputStreamConfig);
             final StreamCut startStreamCut = resolveStartStreamCut(inputStreamConfig);
             final StreamCut endStreamCut = resolveEndStreamCut(inputStreamConfig);
@@ -72,21 +65,13 @@ public class StreamToBinaryFileJob extends AbstractJob {
                     .uid("pravega-reader")
                     .name("pravega-reader");
 
-            //Each event is a binary file so every line will have ingested binary file size
+            //Each event is a binary file so every line will have size of ingested binary file
             final DataStream<String> byteSizes = lines.flatMap((byte[] value, Collector<String> out) -> {
-                                                                                        int size = value.length;
-                                                                                        out.collect(Integer.toString(size));
-                                                                });
-
-            // final DataStream<byte[]> toOutput = Filters.dynamicByteArrayFilter(lines, getConfig().getParams());
-            
-            final StreamingFileSink<String> sink = StreamingFileSink
-                    .forRowFormat(new Path(outputFilePath), new SimpleStringEncoder<String>())
-                    .withRollingPolicy(OnCheckpointRollingPolicy.build())
-                    .build();
-            byteSizes.addSink(sink)
-                .uid("file-sink")
-                .name("file-sink");
+                                                                                        double size = (long) value.length / 1024.0;
+                                                                                        out.collect(String.format("%.2f KB", size));
+                                                                }).returns(Types.STRING);
+            log.info("Binary File size =");
+            byteSizes.printToErr();
 
             log.info("Executing {} job", jobName);
             env.execute(jobName);
